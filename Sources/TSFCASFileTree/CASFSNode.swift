@@ -20,6 +20,7 @@ public struct LLBCASFSNode {
     public enum NodeContent {
         case tree(LLBCASFileTree)
         case blob(LLBCASBlob)
+        case symlink(to: String, id: LLBDataID)
     }
 
     public let db: LLBCASDatabase
@@ -35,6 +36,11 @@ public struct LLBCASFSNode {
         self.value = NodeContent.blob(blob)
     }
 
+    public init(symlink: String, id: LLBDataID, db: LLBCASDatabase) {
+        self.db = db
+        self.value = NodeContent.symlink(to: symlink, id: id)
+    }
+
     /// Returns aggregated (for trees) or regular size of the Entry
     public func size() -> Int {
         switch value {
@@ -42,6 +48,8 @@ public struct LLBCASFSNode {
             return tree.aggregateSize
         case .blob(let blob):
             return blob.size
+        case .symlink:
+            return 0
         }
     }
 
@@ -52,6 +60,8 @@ public struct LLBCASFSNode {
             return .directory
         case .blob(let blob):
             return blob.type
+        case .symlink:
+            return .symlink
         }
     }
 
@@ -71,12 +81,22 @@ public struct LLBCASFSNode {
         return blob
     }
 
+    /// Get the target of a symlink (if symlink).
+    public var symlink: String? {
+        guard case let .symlink(target, _) = value else {
+            return nil
+        }
+        return target
+    }
+
     public func asDirectoryEntry(filename: String) -> LLBDirectoryEntryID {
         switch value {
         case let .tree(tree):
             return tree.asDirectoryEntry(filename: filename)
         case let .blob(blob):
             return blob.asDirectoryEntry(filename: filename)
+        case let .symlink(_, id):
+            return LLBDirectoryEntryID(info: .init(name: filename, type: .symlink, size: 0), id: id)
         }
     }
 }

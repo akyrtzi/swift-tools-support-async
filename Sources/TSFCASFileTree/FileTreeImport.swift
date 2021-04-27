@@ -455,7 +455,7 @@ private final class CASTreeImport {
             if TSCBasic.localFileSystem.isFile(importPath) {
                 // We can import individual files just fine.
                 _ = stats.toImportObjects_.add(1)
-                return [loop.makeSucceededFuture([(importPath, .REG)])]
+                return [loop.makeSucceededFuture([(importPath, TSCBasic.localFileSystem.isSymlink(importPath) ? .LNK : .REG)])]
             } else {
                 // Scan the filesystem tree using multiple threads.
                 return (0..<self.ssdQueue.maxOpCount).map { _ in

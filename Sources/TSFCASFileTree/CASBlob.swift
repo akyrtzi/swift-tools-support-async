@@ -103,7 +103,7 @@ public struct LLBCASBlob {
         self.receivedId = .outer(id)
 
         // Check the type is actually a blob we understand.
-        guard info.type == .plainFile || info.type == .executable else {
+        guard info.type == .plainFile || info.type == .executable || info.type == .symlink else {
             throw LLBCASBlobError.notABlob
         }
 

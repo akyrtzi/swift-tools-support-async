@@ -139,6 +139,10 @@ class ConcurrentFileTreeWalker: RetrieveChildrenProtocol {
                 let entryItem = Item(arg: FilterArgument(path: nil, type: blob.type, size: blob.size), id: item.id, scanResult: item.scanResult)
                 _ = self.filter(entryItem)
                 return []
+            case let .symlink(_, id):
+                let entryItem = Item(arg: FilterArgument(path: nil, type: .symlink, size: 0), id: id, scanResult: item.scanResult)
+                _ = self.filter(entryItem)
+                return []
             }
         }
     }

@@ -20,9 +20,10 @@ public struct LLBCASFSClient {
     /// Errors produced by CASClient
     public enum Error: Swift.Error {
         case noEntry(LLBDataID)
-        case notSupportedYet
         case invalidUse
         case unexpectedNode
+        case unrecognized
+        case nonUtf8Symlink
     }
 
     /// Remembers db
@@ -38,7 +39,11 @@ public struct LLBCASFSClient {
     /// Load CASFSNode from CAS
     /// If object doesn't exist future fails with noEntry
     public func load(_ id: LLBDataID, type hint: LLBFileType? = nil, _ ctx: Context) -> LLBFuture<LLBCASFSNode> {
-        return db.get(id, ctx).flatMapThrowing { objectOpt in
+        enum NodeResult {
+            case direct(LLBCASFSNode)
+            case future(LLBFuture<LLBCASFSNode>)
+        }
+        func produceNode(id: LLBDataID, objectOpt: LLBCASObject?) throws -> NodeResult {
             guard let object = objectOpt else {
                 throw Error.noEntry(id)
             }
@@ -46,22 +51,47 @@ public struct LLBCASFSClient {
             switch hint {
             case .directory?:
                 let tree = try LLBCASFileTree(id: id, object: object)
-                return LLBCASFSNode(tree: tree, db: self.db)
+                return .direct(LLBCASFSNode(tree: tree, db: self.db))
             case .plainFile?, .executable?:
                 let blob = try LLBCASBlob(db: self.db, id: id, type: hint!, object: object, ctx)
-                return LLBCASFSNode(blob: blob, db: self.db)
-            case .symlink?, .UNRECOGNIZED?:
-                // We don't support symlinks yet
-                throw Error.notSupportedYet
+                return .direct(LLBCASFSNode(blob: blob, db: self.db))
+            case .symlink?:
+                guard object.refs.isEmpty else {
+                    // Symlink imported as top-level file.
+                    guard object.refs.count == 1 else {
+                        throw Error.nonUtf8Symlink
+                    }
+                    return .future(load(object.refs.first!, type: hint, ctx))
+                }
+                guard let to = object.data.getString(at: 0, length: object.data.readableBytes) else {
+                    throw Error.nonUtf8Symlink
+                }
+                return .direct(LLBCASFSNode(symlink: to, id: id, db: self.db))
+            case .UNRECOGNIZED?:
+                throw Error.unrecognized
             case nil:
                 if let tree = try? LLBCASFileTree(id: id, object: object) {
-                    return LLBCASFSNode(tree: tree, db: self.db)
+                    return .direct(LLBCASFSNode(tree: tree, db: self.db))
                 } else if let blob = try? LLBCASBlob(db: self.db, id: id, object: object, ctx) {
-                    return LLBCASFSNode(blob: blob, db: self.db)
+                    return .direct(LLBCASFSNode(blob: blob, db: self.db))
                 } else {
-                    // We don't support symlinks yet
-                    throw Error.notSupportedYet
+                    throw Error.unrecognized
                 }
+            }
+        }
+
+        return db.get(id, ctx).flatMap { objectOpt in
+            let nodeResult: NodeResult
+            do {
+                nodeResult = try produceNode(id: id, objectOpt: objectOpt)
+            } catch {
+                return ctx.group.next().makeFailedFuture(error)
+            }
+            switch nodeResult {
+            case .direct(let node):
+                return ctx.group.next().makeSucceededFuture(node)
+            case .future(let future):
+                return future
             }
         }
     }

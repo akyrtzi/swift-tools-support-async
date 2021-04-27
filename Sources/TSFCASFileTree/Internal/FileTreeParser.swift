@@ -39,7 +39,11 @@ struct CASFileTreeParser {
             return try parseDirectory(id: id, path: path, casObject: casObject)
         case .symlink?:
             guard casObject.refs.isEmpty else {
-                throw LLBCASFileTreeFormatError.unexpectedSymlinkData(id)
+                // Symlink imported as top-level file.
+                guard casObject.refs.count == 1 else {
+                    throw LLBCASFileTreeFormatError.unexpectedSymlinkData(id)
+                }
+                return try parseFile(id: id, path: path, casObject: casObject, kind: kind!)
             }
 
             // The reference is the symlink target.
