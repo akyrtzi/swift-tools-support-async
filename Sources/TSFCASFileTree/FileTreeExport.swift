@@ -113,6 +113,7 @@ public extension LLBCASFileTree {
         _ id: LLBDataID,
         from db: LLBCASDatabase,
         to exportPathPrefix: AbsolutePath,
+        filter: ((LLBDataID, AbsolutePath) -> LLBFuture<Bool>)? = nil,
         materializer: LLBFilesystemObjectMaterializer = LLBRealFilesystemMaterializer(),
         storageBatcher: LLBBatchingFutureOperationQueue? = nil,
         stats: ExportProgressStats? = nil,
@@ -120,11 +121,18 @@ public extension LLBCASFileTree {
     ) -> LLBFuture<Void> {
         let storageBatcher = storageBatcher ?? ctx.fileTreeExportStorageBatcher
         let stats = stats ?? .init()
-        let delegate = CASFileTreeWalkerDelegate(from: db, to: exportPathPrefix, materializer: materializer, storageBatcher: storageBatcher, stats: stats)
+        let delegate = CASFileTreeWalkerDelegate(
+            from: db,
+            to: exportPathPrefix,
+            filter: filter,
+            materializer: materializer,
+            storageBatcher: storageBatcher,
+            stats: stats
+        )
 
         let walker = ConcurrentHierarchyWalker(group: db.group, delegate: delegate)
         _ = stats.objectsToExport_.add(1)
-        return walker.walk(.init(id: id, exportPath: exportPathPrefix, kindHint: nil), ctx)
+        return walker.walk(.init(id: id, exportPath: exportPathPrefix, kindHint: nil, isFileChunk: false), ctx)
     }
 }
 
@@ -132,6 +140,7 @@ public extension LLBCASFileTree {
 private final class CASFileTreeWalkerDelegate: RetrieveChildrenProtocol {
     let db: LLBCASDatabase
     let exportPathPrefix: AbsolutePath
+    let filter: ((LLBDataID, AbsolutePath) -> LLBFuture<Bool>)?
     let materializer: LLBFilesystemObjectMaterializer
     let stats: LLBCASFileTree.ExportProgressStats
     let storageBatcher: LLBBatchingFutureOperationQueue?
@@ -140,13 +149,22 @@ private final class CASFileTreeWalkerDelegate: RetrieveChildrenProtocol {
         let id: LLBDataID
         let exportPath: AbsolutePath
         let kindHint: AnnotatedCASTreeChunk.ItemKind?
+        let isFileChunk: Bool
     }
 
     let allocator = LLBByteBufferAllocator()
 
-    init(from db: LLBCASDatabase, to exportPathPrefix: AbsolutePath, materializer: LLBFilesystemObjectMaterializer, storageBatcher: LLBBatchingFutureOperationQueue?, stats: LLBCASFileTree.ExportProgressStats) {
+    init(
+        from db: LLBCASDatabase,
+        to exportPathPrefix: AbsolutePath,
+        filter: ((LLBDataID, AbsolutePath) -> LLBFuture<Bool>)?,
+        materializer: LLBFilesystemObjectMaterializer,
+        storageBatcher: LLBBatchingFutureOperationQueue?,
+        stats: LLBCASFileTree.ExportProgressStats
+    ) {
         self.db = db
         self.exportPathPrefix = exportPathPrefix
+        self.filter = filter
         self.materializer = materializer
         self.stats = stats
         self.storageBatcher = storageBatcher
@@ -154,6 +172,20 @@ private final class CASFileTreeWalkerDelegate: RetrieveChildrenProtocol {
 
     /// Conformance to `RetrieveChildrenProtocol`.
     func children(of item: Item, _ ctx: Context) -> LLBFuture<[Item]> {
+        guard let filter = filter, !item.isFileChunk else {
+            return childrenImpl(of: item, ctx)
+        }
+
+        return filter(item.id, item.exportPath).flatMap { traverse in
+            if traverse {
+                return self.childrenImpl(of: item, ctx)
+            } else {
+                return ctx.group.next().makeSucceededFuture([])
+            }
+        }
+    }
+
+    private func childrenImpl(of item: Item, _ ctx: Context) -> LLBFuture<[Item]> {
 
         _ = stats.downloadsInProgressObjects_.add(1)
 
@@ -174,14 +206,14 @@ private final class CASFileTreeWalkerDelegate: RetrieveChildrenProtocol {
             // Unblock the current NIO thread.
             batcher.execute {
                 try self.parseAndMaterialize(casObject, item).map {
-                    Item(id: $0.id, exportPath: $0.path, kindHint: $0.kind)
+                    Item(id: $0.id, exportPath: $0.path, kindHint: $0.kind, isFileChunk: $0.path == item.exportPath)
                 }
             }
           }
         } else {
           return casObjectFuture.flatMapThrowing { casObject in
             try self.parseAndMaterialize(casObject, item).map {
-                Item(id: $0.id, exportPath: $0.path, kindHint: $0.kind)
+                Item(id: $0.id, exportPath: $0.path, kindHint: $0.kind, isFileChunk: $0.path == item.exportPath)
             }
           }
         }
